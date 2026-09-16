@@ -1,0 +1,12 @@
+# Secrets are passed at runtime via docker-compose env_file — never bake them into the image
+.env
+.env.*
+!.env.example
+
+.git/
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store

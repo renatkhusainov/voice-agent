@@ -1,7 +1,7 @@
 services:
   app:
     build: .
-    env_file: .env 
+    env_file: .env
     container_name: fde_app
     ports:
       - "8000:8000"
@@ -24,7 +24,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fde -d fde_db"]
+      # $$ defers expansion to the container's shell, which has these vars set
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5

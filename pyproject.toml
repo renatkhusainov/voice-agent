@@ -1,0 +1,37 @@
+[project]
+name = "fde-voice-agent"
+version = "0.1.0"
+description = "AI voice agent for dental practices"
+requires-python = ">=3.12"
+
+dependencies = [
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.46.0",
+    "sqlalchemy==2.0.36",
+    "psycopg[binary]==3.3.5",
+    "alembic==1.13.3",
+    "pydantic-settings==2.15.0",
+    "pytest==8.3.5",
+    "httpx2==2.13.0",
+    "twilio==9.11.1",
+    "pipecat-ai[deepgram,anthropic,silero]==1.10.0",
+    "pipecat-ai-prebuilt",
+    "aiofiles",
+    "aiohttp",
+    "loguru",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.5", "httpx==0.28.1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.uv.scripts]
+dev = "uvicorn app.main:app --reload"
+migrate = "alembic upgrade head"
+test = "pytest tests/ -v"
+ngrok = "ngrok http 8000 --url https://reword-finished-schnapps.ngrok-free.dev"

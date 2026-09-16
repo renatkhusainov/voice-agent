@@ -1,8 +1,0 @@
-fastapi==0.141.1
-uvicorn[standard]==0.46.0
-sqlalchemy==2.0.36
-psycopg[binary]==3.3.5
-alembic==1.13.3
-pydantic-settings==2.15.0
-pytest==8.3.5
-greenlet==3.2.3

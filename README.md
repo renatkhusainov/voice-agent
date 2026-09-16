@@ -11,6 +11,7 @@ AI-powered voice agent for dental practices. Handles inbound calls, captures lea
 - **SQLAlchemy 2.0** — SQL toolkit and ORM
 - **Alembic** — Database schema migrations
 - **Pydantic / Pydantic Settings** — Data validation and environment settings
+- **Pipecat** — Voice pipeline (Twilio + Deepgram + Anthropic)
 - **pytest + TestClient** — Automated test suite with in-memory SQLite isolation
 - **Docker & Docker Compose** — Containerized local environment
 
@@ -25,7 +26,6 @@ fde-voice-agent/
 │   ├── db.py                # SQLAlchemy engine, SessionLocal, and get_db dependency
 │   ├── main.py              # FastAPI app initialization and route registration
 │   ├── models/
-│   │   ├── __init__.py      # Re-exports for SQLAlchemy models
 │   │   └── models.py        # Database models (Practice, Call, Lead, Appointment)
 │   ├── routers/
 │   │   └── practice.py      # Practice and Call API endpoints
@@ -38,10 +38,12 @@ fde-voice-agent/
 ├── tests/
 │   ├── conftest.py          # Pytest fixtures and DB session overrides
 │   └── test_api.py          # API and model test suite
+├── .dockerignore            # Keeps .env, .venv, node_modules out of the image
 ├── .env.example             # Template for environment variables
 ├── alembic.ini              # Alembic configuration
 ├── Dockerfile               # Docker container definition for the API
 ├── docker-compose.yaml      # Docker Compose setup (PostgreSQL + App)
+├── pytest.ini               # Pytest configuration and warning filters
 ├── requirements.txt         # Project dependencies
 └── README.md
 ```
@@ -56,7 +58,7 @@ fde-voice-agent/
 git clone <repo>
 cd fde-voice-agent
 
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 
 pip install -r requirements.txt
@@ -68,10 +70,15 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-`.env`:
-```env
-DATABASE_URL=postgresql+psycopg://fde:fde@localhost:5432/fde_db
-```
+Then fill in the real values. All of these are required — the app will not start without them:
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string for local runs |
+| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Used by docker compose for the database container |
+| `TWILIO_NUMBER`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | Twilio telephony |
+| `DEEPGRAM_API_KEY` | Deepgram speech-to-text |
+| `ANTHROPIC_API_KEY` | Anthropic LLM |
 
 ### 3. Start the database
 
@@ -101,8 +108,8 @@ Server is running at `http://localhost:8000`
 To run both PostgreSQL and the FastAPI application in containers:
 
 ```bash
-# Start all services
-docker compose up -d
+# Build and start all services (the app container applies migrations on startup)
+docker compose up -d --build
 
 # View logs
 docker compose logs -f
@@ -115,11 +122,11 @@ docker compose logs -f
 | Method | Endpoint | Description |
 |---|---|---|
 | GET | `/health` | Health check |
-| GET | `/practices` | List practices (supports `skip`, `limit`) |
-| POST | `/practices` | Create a new practice |
+| GET | `/practices` | List practices (`skip` ≥ 0, `limit` 1–100) |
+| POST | `/practices` | Create a new practice (`409` if the phone is already registered) |
 | GET | `/practices/{practice_id}` | Get practice by ID |
-| GET | `/calls` | List calls for a practice (`practice_id`, `skip`, `limit`) |
-| POST | `/calls` | Record a new call |
+| GET | `/calls` | List calls for a practice, newest first (`practice_id`, `skip`, `limit`) |
+| POST | `/calls` | Record a new call (timestamps must include a timezone, e.g. `2026-09-15T10:00:00Z`) |
 
 Interactive Swagger documentation: `http://localhost:8000/docs`  
 ReDoc documentation: `http://localhost:8000/redoc`
@@ -139,7 +146,7 @@ pytest tests/test_api.py -v
 pytest tests/test_api.py::test_create_practice -v
 ```
 
-> **Note**: Tests use an isolated SQLite in-memory database — no external database or Docker container required.
+> **Note**: Tests use an isolated SQLite in-memory database and stub API keys — no `.env`, external database, or Docker container required.
 
 ---
 
