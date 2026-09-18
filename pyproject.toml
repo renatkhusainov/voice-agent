@@ -29,9 +29,3 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 88
-
-[tool.uv.scripts]
-dev = "uvicorn app.main:app --reload"
-migrate = "alembic upgrade head"
-test = "pytest tests/ -v"
-ngrok = "ngrok http 8000 --url https://reword-finished-schnapps.ngrok-free.dev"
