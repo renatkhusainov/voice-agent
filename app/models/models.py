@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from sqlalchemy import (
     Column, Integer, String, Text,
-    DateTime, ForeignKey, Enum, JSON
+    DateTime, ForeignKey, Enum, JSON, Index
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 import enum
@@ -37,6 +37,11 @@ class AppointmentStatus(str, enum.Enum):
     rescheduled = "rescheduled"
 
 
+class TranscriptRole(str, enum.Enum):
+    user      = "user"
+    assistant = "assistant"
+
+
 # ── Models ───────────────────────────────────────────────
 class Practice(Base):
     __tablename__ = "practices"
@@ -55,7 +60,7 @@ class Call(Base):
     __tablename__ = "calls"
 
     id             = Column(Integer, primary_key=True)
-    practice_id    = Column(Integer, ForeignKey("practices.id"), nullable=False)
+    practice_id    = Column(Integer, ForeignKey("practices.id"), nullable=False, index=True)
     caller_number  = Column(String, nullable=False)
     started_at     = Column(DateTime(timezone=True), nullable=False)
     ended_at       = Column(DateTime(timezone=True), nullable=True)
@@ -65,6 +70,25 @@ class Call(Base):
 
     practice = relationship("Practice", back_populates="calls")
     lead     = relationship("Lead", back_populates="call", uselist=False)
+    transcript_turns = relationship(
+        "TranscriptTurn", back_populates="call", order_by="TranscriptTurn.created_at"
+    )
+
+
+class TranscriptTurn(Base):
+    __tablename__ = "transcript_turns"
+    __table_args__ = (
+        # Every eval-suite query starts with "turns for this call, in order"
+        Index("ix_transcript_turns_call_id_created_at", "call_id", "created_at"),
+    )
+
+    id         = Column(Integer, primary_key=True)
+    call_id    = Column(Integer, ForeignKey("calls.id"), nullable=False)
+    role       = Column(Enum(TranscriptRole), nullable=False)
+    text       = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+    call = relationship("Call", back_populates="transcript_turns")
 
 
 class Lead(Base):
