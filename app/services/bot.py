@@ -17,6 +17,7 @@ from pipecat.frames.frames import (
     TranscriptionFrame,
 )
 from pipecat.observers.base_observer import BaseObserver, FramePushed
+from pipecat.observers.user_bot_latency_observer import UserBotLatencyObserver
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -36,6 +37,10 @@ from pipecat.transports.base_transport import BaseTransport
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 from pipecat.workers.runner import WorkerRunner
 
+from app.agent.live import DialogStateLLMService, LiveCallAgent
+from app.agent.session import DEFAULT_MODEL
+from app.agent.tools import TOOLS
+from app.config import settings
 from app.db import SessionLocal
 from app.models.models import CallStatus, TranscriptRole
 from app.services.calls import add_transcript_turn, end_call, start_call
@@ -45,6 +50,15 @@ from app.services.calls import add_transcript_turn, end_call, start_call
 load_dotenv()
 
 RECORDINGS_DIR = "app/temp/recordings"
+
+# Deepgram-side redaction, applied before a transcript ever reaches this process,
+# the LLM, the DB or the logs. Deliberately only what a front-desk agent never
+# needs to hear: payment-card data (`pci`) and SSNs. We do NOT ask Deepgram for
+# `numbers`, `pii` or `phi`: the agent has to hear the caller's name, callback
+# number, dates and the reason for the call to do its job, so those are masked
+# at our own boundary (app/phi) instead, after the LLM has used them.
+# See docs/phi-and-secrets.md for the full reasoning.
+STT_REDACT = ["pci", "ssn"]
 
 
 @dataclass(frozen=True)
@@ -111,6 +125,9 @@ class TranscriptObserver(BaseObserver):
         super().__init__()
         self._call_id = call_id
         self._response_chunks: list[str] = []
+        # What we log about a call: how many turns, never what was said.
+        self.turns_saved = {TranscriptRole.user: 0, TranscriptRole.assistant: 0}
+        self.turns_dropped = 0
 
     async def on_push_frame(self, data: FramePushed):
         src = data.source
@@ -131,7 +148,21 @@ class TranscriptObserver(BaseObserver):
     async def _save(self, role: TranscriptRole, text: str) -> None:
         if not text:
             return
-        await asyncio.to_thread(_insert_transcript_turn, self._call_id, role, text)
+        try:
+            await asyncio.to_thread(_insert_transcript_turn, self._call_id, role, text)
+        except Exception as exc:
+            # A lost turn must not take the call down, and the log line must not
+            # carry the turn: only the exception type, never its message.
+            self.turns_dropped += 1
+            logger.error(
+                "Call {} could not save a {} turn ({})", self._call_id, role.value, type(exc).__name__
+            )
+            return
+        self.turns_saved[role] += 1
+        logger.info(
+            "Call {} turn {} saved: role={} chars={}",
+            self._call_id, sum(self.turns_saved.values()), role.value, len(text),
+        )
 
 
 async def start_call_session(runner_args: RunnerArguments) -> CallSession:
@@ -167,22 +198,37 @@ async def run_bot(
     # of which path gets us there (normal stop, disconnect, or a crash) — so
     # the Call row never lingers as "in_progress" once the pipeline has exited.
     call_failed = False
+    # Built before the try so the finally block can always report its counts.
+    transcript = TranscriptObserver(call.call_id)
+
+    # Tools, confirmation gate, per-call DialogState, filler and escalation —
+    # see app/agent/live.py. Built before the try for the same reason as
+    # `transcript`: the finally block reports its counts.
+    agent = LiveCallAgent(
+        call_id=call.call_id,
+        practice_id=call.practice_id,
+        filler_enabled=settings.tool_filler_enabled,
+        filler_delay_secs=settings.tool_filler_delay_ms / 1000,
+    )
+    # User-stopped-speaking -> bot-started-speaking, per turn: the objective
+    # half of the filler A/B (docs/notes/filler-ab.md).
+    latency = UserBotLatencyObserver()
+    response_latencies_ms: list[int] = []
 
     try:
-        llm = AnthropicLLMService(
-        api_key=os.getenv("ANTHROPIC_API_KEY"),
-        settings=AnthropicLLMService.Settings(
-            model="claude-haiku-4-5-20251001",
-            system_instruction=(
-                f"You are the front desk at iHeartSmiles Pediatric Dentistry. "
-                "Answer in under two sentences. "
-                "Never diagnose. "
-                "For anything clinical say: I'll have the office call you back."
-            ),
-        ),
-    )
+        # No system_instruction here: DialogStateLLMService builds it from
+        # app/agent/prompts.py + this call's DialogState before every inference.
+        llm = DialogStateLLMService(
+            agent=agent,
+            api_key=os.getenv("ANTHROPIC_API_KEY"),
+            settings=AnthropicLLMService.Settings(model=DEFAULT_MODEL),
+        )
+        agent.register(llm)
 
-        stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
+        stt = DeepgramSTTService(
+            api_key=os.getenv("DEEPGRAM_API_KEY"),
+            settings=DeepgramSTTService.Settings(redact=STT_REDACT),
+        )
 
         tts = DeepgramTTSService(
             api_key=os.getenv("DEEPGRAM_API_KEY"),
@@ -192,7 +238,7 @@ async def run_bot(
             ),
         )
 
-        context = LLMContext()
+        context = LLMContext(tools=TOOLS)
         user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
             context,
             user_params=LLMUserAggregatorParams(
@@ -228,8 +274,16 @@ async def run_bot(
             idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
             # Transcript persistence hangs off the pipeline as an observer — see
             # TranscriptObserver — rather than a processor or aggregator hook.
-            observers=[TranscriptObserver(call.call_id)],
+            observers=[transcript, latency],
         )
+
+        @latency.event_handler("on_latency_measured")
+        async def on_latency_measured(observer, latency_seconds):
+            response_latencies_ms.append(round(latency_seconds * 1000))
+            logger.info(
+                "call={} response_latency_ms={} filler_enabled={}",
+                call.call_id, response_latencies_ms[-1], settings.tool_filler_enabled,
+            )
 
         # We use `handle_sigint=False` because `uvicorn` is controlling keyboard
         # interruptions. We use `force_gc=True` to force garbage collection after
@@ -275,7 +329,24 @@ async def run_bot(
     finally:
         status = CallStatus.failed if call_failed else CallStatus.completed
         await asyncio.to_thread(_end_call, call.call_id, status)
-        logger.info(f"Call {call.call_id} ended: status={status.value}")
+        logger.info(
+            "Call {} ended: status={} turns_saved={} (user={}, assistant={}) turns_dropped={}",
+            call.call_id,
+            status.value,
+            sum(transcript.turns_saved.values()),
+            transcript.turns_saved[TranscriptRole.user],
+            transcript.turns_saved[TranscriptRole.assistant],
+            transcript.turns_dropped,
+        )
+        logger.info(
+            "Call {} agent: tool_calls={} tool_ms={} fillers_spoken={} filler_enabled={} response_latency_ms={}",
+            call.call_id,
+            agent.tool_calls,
+            agent.tool_durations_ms,
+            agent.fillers_spoken,
+            settings.tool_filler_enabled,
+            response_latencies_ms,
+        )
 
 
 async def bot(runner_args: RunnerArguments, testing: bool | None = False):
@@ -295,9 +366,9 @@ async def bot(runner_args: RunnerArguments, testing: bool | None = False):
     transport = await create_transport(runner_args, transport_params)
 
     call = await start_call_session(runner_args)
+    # No caller number here: it is an identifier, and logs are not the place for it.
     logger.info(
-        f"Call {call.call_id} started: practice={call.practice_id} "
-        f"from={call.caller_number} sid={call.call_sid}"
+        "Call {} started: practice={} sid={}", call.call_id, call.practice_id, call.call_sid
     )
 
     await run_bot(transport, runner_args, call, testing)

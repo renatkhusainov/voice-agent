@@ -24,17 +24,17 @@ async def inbound_call(request: Request, db: Session = Depends(get_db)) -> Respo
     call_to = form.get("To")
     call_sid = form.get("CallSid")
 
-    logger.info(f"Inbound call from: {call_from} to: {call_to} sid: {call_sid}")
-
+    # Numbers are identifiers (the caller's especially): log the sid, never them.
     practice = db.scalars(select(Practice).where(Practice.phone == call_to)).first()
 
     if practice is None:
+        logger.warning("Inbound call sid={} to a number no practice owns", call_sid)
         twiml = """<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say>This number is not configured.</Say><Hangup/>
 </Response>"""
     else:
-        logger.info(f"Practice found: {practice.name}")
+        logger.info("Inbound call sid={} routed to practice={}", call_sid, practice.id)
         # Twilio sends these back in the stream's "start" message; Pipecat exposes
         # them as runner_args.call_data.body (from/to also as call_data.from_number/to_number)
         stream_params = {

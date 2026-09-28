@@ -40,6 +40,7 @@ class AppointmentStatus(str, enum.Enum):
 class TranscriptRole(str, enum.Enum):
     user      = "user"
     assistant = "assistant"
+    tool      = "tool"  # a tool call and its result, on a live call (app/agent/live.py)
 
 
 # ── Models ───────────────────────────────────────────────

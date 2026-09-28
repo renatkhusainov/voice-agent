@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.models.models import Call, CallStatus, TranscriptRole, TranscriptTurn
+from app.phi import redact
 
 
 def start_call(db: Session, practice_id: int, caller_number: str) -> Call:
@@ -24,8 +25,12 @@ def add_transcript_turn(db: Session, call_id: int, role: TranscriptRole, text: s
 
     Called once per finalized user/assistant turn while the call is live, so
     each call inserts its own row and turns for different calls never contend.
+
+    This is the PHI boundary: `text` is redacted here, on the way in, so the raw
+    words are never stored no matter which caller (observer, test, script) got
+    here. The LLM still hears the raw text; only what we persist is masked.
     """
-    turn = TranscriptTurn(call_id=call_id, role=role, text=text)
+    turn = TranscriptTurn(call_id=call_id, role=role, text=redact(text))
     db.add(turn)
     db.commit()
     db.refresh(turn)

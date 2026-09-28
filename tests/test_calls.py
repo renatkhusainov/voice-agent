@@ -202,8 +202,8 @@ def _patch_bot_dependencies(monkeypatch, *, runner_run):
     pipeline. `runner_run` is installed as WorkerRunner.run()."""
 
     for name in (
-        "AnthropicLLMService", "DeepgramSTTService", "DeepgramTTSService",
-        "SileroVADAnalyzer", "LLMContext", "LLMUserAggregatorParams",
+        "DialogStateLLMService", "DeepgramSTTService", "DeepgramTTSService",
+        "SileroVADAnalyzer", "LLMContext", "LLMUserAggregatorParams", "UserBotLatencyObserver",
     ):
         monkeypatch.setattr(bot_module, name, Mock())
 
@@ -417,3 +417,124 @@ def test_get_transcript_unknown_call_404s(client):
     response = client.get("/calls/99999/transcript")
 
     assert response.status_code == 404
+
+
+# ── PHI boundary: redact before a turn is written ──────────────────────────────
+def test_add_transcript_turn_redacts_before_writing(db_session):
+    practice = add_practice(db_session)
+    call = start_call(db_session, practice.id, "+18135550000")
+
+    turn = add_transcript_turn(
+        db_session, call.id, TranscriptRole.user, "It's Dana, he was born 03/14/2016, call (813) 555-0142"
+    )
+
+    assert db_session.get(TranscriptTurn, turn.id).text == "It's Dana, he was born [DOB], call [PHONE]"
+
+
+def test_assistant_turns_are_redacted_too(db_session):
+    # The model repeats numbers back to confirm them, often spelled out.
+    practice = add_practice(db_session)
+    call = start_call(db_session, practice.id, "+18135550000")
+
+    turn = add_transcript_turn(
+        db_session, call.id, TranscriptRole.assistant,
+        "Just to confirm, that is eight one three five five five zero one four two?",
+    )
+
+    assert db_session.get(TranscriptTurn, turn.id).text == "Just to confirm, that is [NUMBER]?"
+
+
+def test_clean_turn_is_stored_exactly_as_said(db_session):
+    practice = add_practice(db_session)
+    call = start_call(db_session, practice.id, "+18135550000")
+    said = "We'd like a cleaning for 2 kids, maybe Thursday around 4 pm."
+
+    turn = add_transcript_turn(db_session, call.id, TranscriptRole.user, said)
+
+    assert db_session.get(TranscriptTurn, turn.id).text == said
+
+
+def test_transcript_endpoint_never_returns_raw_phi(client, db_session):
+    practice = add_practice(db_session)
+    call = start_call(db_session, practice.id, "+18135550000")
+    add_transcript_turn(db_session, call.id, TranscriptRole.user, "My SSN is 123-45-6789, phone 813-555-0142")
+
+    body = client.get(f"/calls/{call.id}/transcript").json()
+
+    assert body[0]["text"] == "My SSN is [SSN], phone [PHONE]"
+
+
+# ── Deepgram-side redaction is wired up ────────────────────────────────────────
+def test_stt_service_is_asked_to_redact_cards_and_ssns_only(monkeypatch):
+    monkeypatch.setattr(bot_module, "_end_call", lambda call_id, status: None)
+    _patch_bot_dependencies(monkeypatch, runner_run=lambda: asyncio.sleep(0))
+    call = bot_module.CallSession(call_id=42, practice_id=1, caller_number="+1", call_sid="CA1")
+    runner_args = SimpleNamespace(pipeline_idle_timeout_secs=30, handle_sigint=False)
+
+    asyncio.run(bot_module.run_bot(_fake_transport(), runner_args, call, testing=False))
+
+    # Not numbers/pii/phi: the agent has to hear the name, number, dates and complaint.
+    assert bot_module.DeepgramSTTService.Settings.call_args.kwargs == {"redact": ["pci", "ssn"]}
+
+
+def test_stt_redact_setting_reaches_the_deepgram_connection():
+    from pipecat.services.deepgram.stt import DeepgramSTTService
+
+    service = DeepgramSTTService(
+        api_key="fake", settings=DeepgramSTTService.Settings(redact=bot_module.STT_REDACT)
+    )
+    params = service._build_connect_kwargs()
+
+    assert params["redact"] == ["pci", "ssn"]
+    # Entity redaction (pci, ssn, ...) is Nova-only; Deepgram's Flux does digits only.
+    assert params["model"].startswith("nova")
+
+
+# ── logging: call ids and counts, never content ────────────────────────────────
+def test_observer_logs_turn_metadata_but_not_what_was_said(monkeypatch, log_messages):
+    monkeypatch.setattr(bot_module, "_insert_transcript_turn", lambda call_id, role, text: None)
+    observer = bot_module.TranscriptObserver(call_id=42)
+
+    push_frame(observer, Mock(spec=STTService), TranscriptionFrame(
+        text="my son has a toothache", user_id="u", timestamp="2026-09-21T00:00:00Z",
+    ))
+    llm = Mock(spec=LLMService)
+    push_frame(observer, llm, LLMFullResponseStartFrame())
+    push_frame(observer, llm, LLMTextFrame(text="I'll have the office call you back."))
+    push_frame(observer, llm, LLMFullResponseEndFrame())
+
+    assert observer.turns_saved == {TranscriptRole.user: 1, TranscriptRole.assistant: 1}
+    logged = " ".join(log_messages)
+    assert "Call 42 turn 1 saved: role=user chars=22" in logged
+    assert "toothache" not in logged and "office call" not in logged
+
+
+def test_observer_survives_a_failed_write_and_logs_only_the_exception_type(monkeypatch, log_messages):
+    def boom(call_id, role, text):
+        raise RuntimeError(f"insert failed for: {text}")  # even if the message leaks the text
+
+    monkeypatch.setattr(bot_module, "_insert_transcript_turn", boom)
+    observer = bot_module.TranscriptObserver(call_id=42)
+
+    push_frame(observer, Mock(spec=STTService), TranscriptionFrame(
+        text="my son has a toothache", user_id="u", timestamp="2026-09-21T00:00:00Z",
+    ))  # must not raise: a lost turn must not end the call
+
+    assert observer.turns_dropped == 1
+    assert sum(observer.turns_saved.values()) == 0
+    logged = " ".join(log_messages)
+    assert "RuntimeError" in logged
+    assert "toothache" not in logged
+
+
+def test_run_bot_logs_the_call_id_and_turn_counts(monkeypatch, log_messages):
+    monkeypatch.setattr(bot_module, "_end_call", lambda call_id, status: None)
+    _patch_bot_dependencies(monkeypatch, runner_run=lambda: asyncio.sleep(0))
+    call = bot_module.CallSession(call_id=42, practice_id=1, caller_number="+18135550142", call_sid="CA1")
+    runner_args = SimpleNamespace(pipeline_idle_timeout_secs=30, handle_sigint=False)
+
+    asyncio.run(bot_module.run_bot(_fake_transport(), runner_args, call, testing=False))
+
+    logged = " ".join(log_messages)
+    assert "Call 42 ended: status=completed turns_saved=0 (user=0, assistant=0) turns_dropped=0" in logged
+    assert "8135550142" not in logged
