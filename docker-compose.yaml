@@ -7,9 +7,32 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # DialogState (app/agent/state.py) persistence — app/agent/store.py.
+  # First appearance of Redis in this project: it holds a conversation's
+  # in-progress slots/confirmation state, keyed by call_id (session_id in
+  # text mode), TTL one hour, so a process restart doesn't lose a call
+  # mid-conversation the way the in-memory _SESSIONS dict in
+  # app/agent/session.py does.
+  redis:
+    image: redis:7-alpine
+    container_name: fde_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   postgres:
@@ -33,3 +56,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:

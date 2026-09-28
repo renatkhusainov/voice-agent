@@ -66,3 +66,18 @@ def db_session():
     session.rollback()
     session.close()
     Base.metadata.drop_all(engine)
+
+
+@pytest.fixture
+def log_messages():
+    """Every loguru message our code emits, captured BEFORE the scrubber sees it.
+
+    Asserting on this (rather than on scrubbed output) proves a log line never
+    carried PHI to begin with, instead of merely that the scrubber caught it.
+    """
+    from loguru import logger
+
+    seen: list[str] = []
+    handler_id = logger.add(lambda m: seen.append(m.record["message"]), level="DEBUG")
+    yield seen
+    logger.remove(handler_id)

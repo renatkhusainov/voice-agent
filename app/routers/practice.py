@@ -4,8 +4,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models.models import Call, Practice
-from app.schemas.practice import CallCreate, CallRead, PracticeCreate, PracticeRead
+from app.models.models import Call, Practice, TranscriptTurn
+from app.schemas.practice import (
+    CallCreate,
+    CallRead,
+    PracticeCreate,
+    PracticeRead,
+    TranscriptTurnRead,
+)
 
 
 router_practices = APIRouter(prefix="/practices", tags=["practices"])
@@ -71,3 +77,17 @@ def create_call(payload: CallCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(call)
     return call
+
+
+@router_calls.get("/{call_id}/transcript", response_model=list[TranscriptTurnRead])
+def get_transcript(call_id: int, db: Session = Depends(get_db)):
+    if db.get(Call, call_id) is None:
+        raise HTTPException(status_code=404, detail="Call not found")
+
+    stmt = (
+        select(TranscriptTurn)
+        .where(TranscriptTurn.call_id == call_id)
+        .order_by(TranscriptTurn.created_at, TranscriptTurn.id)
+    )
+    return db.scalars(stmt).all()
+
