@@ -1,0 +1,25 @@
+{
+  "_about": "20 caller questions for Sunshine Dental (practice 4), written before the KB docs existed and phrased the way patients ask, not the way the docs are worded. A hit: one of the top-k chunks comes from an expected doc AND contains every string in that expectation (case-insensitive, dashes normalized). Several questions deliberately share no keywords with their answer (Invisalign, put me to sleep, installments): that's what semantic search is for.",
+  "questions": [
+    {"id": 1, "q": "Do you guys take Delta Dental?", "expect": [{"doc": "10-insurance-we-accept.md", "contains": ["Delta Dental"]}]},
+    {"id": 2, "q": "I don't have insurance. How much is a regular cleaning?", "expect": [{"doc": "16-preventive-care-exams-and-cleanings.md", "contains": ["$105-$135"]}]},
+    {"id": 3, "q": "Where do I park when I come in?", "expect": [{"doc": "03-location-and-parking.md", "contains": ["Albany"]}]},
+    {"id": 4, "q": "Are you open on Saturdays?", "expect": [{"doc": "02-hours-and-holidays.md", "contains": ["Saturday"]}]},
+    {"id": 5, "q": "What happens if I just don't show up for my appointment?", "expect": [{"doc": "08-cancellation-and-no-show-policy.md", "contains": ["$50"]}]},
+    {"id": 6, "q": "My son knocked his front tooth out playing basketball, what do we do?", "expect": [{"doc": "29-dental-emergencies.md", "contains": ["milk"]}]},
+    {"id": 7, "q": "I'm terrified of the dentist. Can you put me to sleep or something?", "expect": [{"doc": "28-sedation-and-dental-anxiety.md", "contains": ["sedation"]}]},
+    {"id": 8, "q": "Do you do Invisalign?", "expect": [{"doc": "26-clear-aligners.md", "contains": ["D8090"]}, {"doc": "26-clear-aligners.md", "contains": ["aligner"]}]},
+    {"id": 9, "q": "How much does a crown cost?", "expect": [{"doc": "21-crowns.md", "contains": ["$1,150-$1,450"]}]},
+    {"id": 10, "q": "Can I bring my kids if they're on Medicaid?", "expect": [{"doc": "12-medicaid-and-medicare.md", "contains": ["Medicaid"]}]},
+    {"id": 11, "q": "What should I bring to my first appointment?", "expect": [{"doc": "05-new-patient-first-visit.md", "contains": ["photo ID"]}]},
+    {"id": 12, "q": "Can I pay in installments for a big treatment?", "expect": [{"doc": "15-financing-and-payment-plans.md", "contains": ["interest-free"]}, {"doc": "15-financing-and-payment-plans.md", "contains": ["CareCredit"]}]},
+    {"id": 13, "q": "My wisdom teeth have to come out. Is that something you do?", "expect": [{"doc": "23-extractions-and-wisdom-teeth.md", "contains": ["Bayshore"]}]},
+    {"id": 14, "q": "Does the doctor do root canals on molars?", "expect": [{"doc": "22-root-canals.md", "contains": ["Tampa Endodontics"]}]},
+    {"id": 15, "q": "Is there anyone there who speaks Spanish?", "expect": [{"doc": "04-accessibility-and-languages.md", "contains": ["Lucia"]}]},
+    {"id": 16, "q": "I'm pregnant. Is it safe to get my teeth cleaned?", "expect": [{"doc": "30-children-pregnancy-and-medical-history.md", "contains": ["pregnan"]}]},
+    {"id": 17, "q": "What's the latest time I can come in?", "expect": [{"doc": "02-hours-and-holidays.md", "contains": ["4:30"]}]},
+    {"id": 18, "q": "How much is a deep cleaning?", "expect": [{"doc": "19-gum-disease-and-deep-cleaning.md", "contains": ["D4341"]}]},
+    {"id": 19, "q": "My face is really swollen and it's hard to swallow.", "expect": [{"doc": "29-dental-emergencies.md", "contains": ["911"]}]},
+    {"id": 20, "q": "Do you have some kind of plan for people without dental insurance?", "expect": [{"doc": "31-sunshine-smile-membership-plan.md", "contains": ["$349"]}, {"doc": "12-medicaid-and-medicare.md", "contains": ["$349"]}]}
+  ]
+}

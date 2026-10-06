@@ -10,3 +10,12 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .DS_Store
+
+# Call audio and other runtime artefacts: recordings are the most PHI-dense file
+# this app produces. They were being copied into the image by `COPY . .`.
+app/temp/
+*.wav
+.claude/
+
+# A note to myself, not the product — never shipped.
+experiments/

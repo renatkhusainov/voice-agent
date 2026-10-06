@@ -6,3 +6,5 @@ __pycache__/
 .DS_Store
 node_modules/
 app/temp/
+experiments/epic_sandbox/.keys/
+experiments/epic_sandbox/out/

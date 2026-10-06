@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-from app.models.models import CallStatus
+from app.models.models import CallStatus, TranscriptRole
 
 
 class PracticeCreate(BaseModel):
@@ -49,4 +49,14 @@ class CallRead(BaseModel):
     ended_at: datetime | None = None
     status: CallStatus
     recording_url: str | None = None
+    created_at: datetime
+
+
+class TranscriptTurnRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    call_id: int
+    role: TranscriptRole
+    text: str
     created_at: datetime
