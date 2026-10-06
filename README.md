@@ -172,7 +172,10 @@ docker compose up -d --build
 
 # First deploy only: seed FHIR and ingest the KB from inside the app container
 # (it reaches HAPI as http://hapi:8080/fhir and Postgres as postgres:5432).
+# Seed every practice that takes calls, above all the one that owns
+# TWILIO_NUMBER: a practice missing from HAPI can't offer times, only a callback.
 docker compose exec app python -m scripts.seed_fhir --practice-id 4
+docker compose exec app python -m scripts.seed_fhir --practice-id 2 --week-of $(date +%F) --days 14
 docker compose exec app python -m scripts.ingest --practice-id 4
 
 # Public address for Twilio (fixed ngrok domain, see Makefile)
