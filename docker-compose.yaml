@@ -8,6 +8,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379/0
+      FHIR_BASE_URL: http://hapi:8080/fhir
     depends_on:
       postgres:
         condition: service_healthy
@@ -36,7 +37,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:pg16-trixie
     container_name: fde_postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -54,6 +55,47 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # FHIR R4 server (docs/notes/fhir-cheatsheet.md, app/fhir/client.py): the
+  # standard clinical-data API EHRs speak, run locally so the app can be
+  # built against the real protocol instead of a mock. Its own database, not
+  # the app's: FHIR data has its own schema, lifecycle and backups.
+  # The image is distroless (no shell), so no in-container healthcheck: it's
+  # ready when GET http://localhost:8090/fhir/metadata answers (~1 min).
+  hapi:
+    image: hapiproject/hapi:v8.12.0-1
+    container_name: fde_hapi
+    ports:
+      - "8090:8080"
+    environment:
+      spring.datasource.url: jdbc:postgresql://hapi-db:5432/hapi
+      spring.datasource.username: ${HAPI_DB_USER:-hapi}
+      spring.datasource.password: ${HAPI_DB_PASSWORD:-hapi}
+      spring.datasource.driverClassName: org.postgresql.Driver
+      spring.jpa.properties.hibernate.dialect: ca.uhn.fhir.jpa.model.dialect.HapiFhirPostgresDialect
+      hapi.fhir.fhir_version: R4
+    depends_on:
+      hapi-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  hapi-db:
+    image: postgres:16
+    container_name: fde_hapi_db
+    environment:
+      POSTGRES_USER: ${HAPI_DB_USER:-hapi}
+      POSTGRES_PASSWORD: ${HAPI_DB_PASSWORD:-hapi}
+      POSTGRES_DB: hapi
+    # No host port: only HAPI talks to this database.
+    volumes:
+      - hapi_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d hapi"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:
+  hapi_db_data:
