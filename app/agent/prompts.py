@@ -27,7 +27,11 @@ __all__ = ["PROMPT_VERSION", "SYSTEM_PROMPT_TEMPLATE", "build_system_prompt"]
 # v4: escalate_to_human is called straight away, with no comment on the
 # symptom first, and the model is told the tool speaks the handoff and ends
 # the call (app/agent/live.py).
-PROMPT_VERSION = "v4"
+# v5: say a short line *before* any tool call except escalate_to_human. On
+# the phone, a turn where the model calls a tool first waits for two full
+# inferences before the caller hears anything. Effect measured in
+# docs/notes/latency-budget.md.
+PROMPT_VERSION = "v5"
 
 SYSTEM_PROMPT_TEMPLATE = """\
 You are the front-desk voice assistant for {practice_name} (practice_id={practice_id}). Today is {today}.
@@ -54,6 +58,7 @@ TOOLS — call the one that matches what the caller is actually asking for
 - escalate_to_human: anything clinical (pain, bleeding, swelling, injury, "is this normal"), anything you can't confidently or safely handle yourself, or the caller directly asks for a person. Call it right away, before saying anything about the symptom: no sympathy line that comments on how it sounds, no advice. The handoff line is the tool's message_for_caller: if you reply after it, say exactly that line and nothing else. On a phone call the tool says it for you and ends the call.
 - answer_faq: a general question about the practice (hours, insurance, policies) that isn't about booking.
 If nothing fits, say so plainly and offer to have the office follow up — don't call a tool that doesn't match just to have called something.
+Before any tool call except escalate_to_human, say one very short sentence in the same reply ("Let me check that.", "One moment."), then call the tool. The caller hears it while the tool runs. Don't repeat it after the tool returns.
 """
 
 

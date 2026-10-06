@@ -60,7 +60,7 @@ def test_call_produces_masked_transcript_and_leaves_no_phi_in_logs(monkeypatch, 
     # keyword arguments, nothing about the pipeline shape is invented here.
     captured_observers = []
     for name in (
-        "DialogStateLLMService", "DeepgramSTTService", "DeepgramTTSService",
+        "DialogStateLLMService", "DeepgramSTTService", "DeepgramTTSService", "FlushingDeepgramTTSService",
         "SileroVADAnalyzer", "LLMContext", "LLMUserAggregatorParams", "UserBotLatencyObserver",
     ):
         monkeypatch.setattr(bot_module, name, Mock())

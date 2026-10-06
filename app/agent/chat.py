@@ -49,25 +49,27 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--practice-id", type=int, default=None, help="An existing practice id; omit for a demo practice")
     args = parser.parse_args(argv)
 
-    db = SessionLocal()
     client = Anthropic(api_key=settings.anthropic_api_key)
 
-    if args.practice_id is not None:
-        practice = db.get(Practice, args.practice_id)
-        if practice is None:
-            print(f"No practice with id {args.practice_id}", file=sys.stderr)
-            raise SystemExit(1)
-    else:
-        practice = get_or_create_demo_practice(db)
+    with SessionLocal() as db:
+        if args.practice_id is not None:
+            practice = db.get(Practice, args.practice_id)
+            if practice is None:
+                print(f"No practice with id {args.practice_id}", file=sys.stderr)
+                raise SystemExit(1)
+        else:
+            practice = get_or_create_demo_practice(db)
 
-    # Deterministic per practice, not arbitrary: app/agent/state.py's
-    # DialogState is now Redis-backed and keyed by this same session_id, so a
-    # second `--practice-id N` run picks the same key back up — collected
-    # slots survive a restart of this CLI itself, the same property
-    # tests/test_store.py proves for the harness in general.
-    session = get_or_create_session(
-        f"cli-{practice.id}", create_call_id=lambda: start_call(db, practice.id, "cli-harness").id,
-    )
+        # Deterministic per practice, not arbitrary: app/agent/state.py's
+        # DialogState is now Redis-backed and keyed by this same session_id, so a
+        # second `--practice-id N` run picks the same key back up — collected
+        # slots survive a restart of this CLI itself, the same property
+        # tests/test_store.py proves for the harness in general.
+        session = get_or_create_session(
+            f"cli-{practice.id}", create_call_id=lambda: start_call(db, practice.id, "cli-harness").id,
+        )
+        db.refresh(practice)
+        db.expunge(practice)  # keep its loaded fields readable after this session closes
     print(f"Chatting with {practice.name} (prompt {PROMPT_VERSION}, call_id={session.call_id}). Ctrl-D to quit.")
 
     while True:
@@ -78,7 +80,12 @@ def main(argv: list[str] | None = None) -> None:
             break
         if not message:
             continue
-        reply = take_turn(client, db, session, practice=practice, message=message)
+        # A short-lived DB session per turn, closed before waiting on the
+        # human again. One session held across input() kept a transaction,
+        # and its lock on `appointments`, open for as long as the REPL stayed
+        # open: 7 days in one case, which blocked a migration.
+        with SessionLocal() as db:
+            reply = take_turn(client, db, session, practice=practice, message=message)
         print(f"bot> {reply}")
 
 

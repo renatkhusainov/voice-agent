@@ -202,7 +202,7 @@ def _patch_bot_dependencies(monkeypatch, *, runner_run):
     pipeline. `runner_run` is installed as WorkerRunner.run()."""
 
     for name in (
-        "DialogStateLLMService", "DeepgramSTTService", "DeepgramTTSService",
+        "DialogStateLLMService", "DeepgramSTTService", "DeepgramTTSService", "FlushingDeepgramTTSService",
         "SileroVADAnalyzer", "LLMContext", "LLMUserAggregatorParams", "UserBotLatencyObserver",
     ):
         monkeypatch.setattr(bot_module, name, Mock())

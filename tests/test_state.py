@@ -120,7 +120,7 @@ def test_read_back_reports_missing_fields_plainly():
 
 
 # ── The confirmation gate itself ────────────────────────────────────────────
-def _payload(practice_id, slot="2026-10-01T13:00:00+00:00"):
+def _payload(practice_id, slot="2030-10-01T13:00:00+00:00"):
     return BookAppointmentInput(
         practice_id=practice_id, caller_name="Dana Lee", callback_number="+18135550142",
         service="cleaning", requested_slot=slot,
@@ -166,7 +166,7 @@ def test_matching_call_on_a_later_turn_books(db_session):
     result = gated_book_appointment(db_session, _payload(practice.id), call_id=call.id, state=state)
 
     assert not isinstance(result, BookingProposalResult)
-    assert result.status.value == "pending"
+    assert result.status.value == "confirmed"  # FHIR status=booked
     assert db_session.query(Appointment).count() == 1
     assert state.confirmed is True
     assert state.pending_confirmation is False
@@ -179,7 +179,7 @@ def test_a_changed_detail_on_the_later_turn_re_proposes_instead_of_booking(db_se
 
     gated_book_appointment(db_session, _payload(practice.id), call_id=call.id, state=state)
     state.turn_count = 2
-    changed = _payload(practice.id, slot="2026-10-01T14:00:00+00:00")  # different time
+    changed = _payload(practice.id, slot="2030-10-01T14:00:00+00:00")  # different time
     result = gated_book_appointment(db_session, changed, call_id=call.id, state=state)
 
     assert isinstance(result, BookingProposalResult)
@@ -241,3 +241,38 @@ def test_check_availability_writes_practice_id_into_state(db_session):
 
     assert state.slots.practice_id == practice.id
     assert state.intent == DialogIntent.check_availability
+
+
+# ── The gate checks the slot before proposing, and never re-proposes a booking ─
+def test_gate_refuses_to_propose_a_slot_that_could_never_be_booked(db_session):
+    # Refused on the *proposal*, so the caller is never read back a time that
+    # would fail after they say yes. State stays untouched.
+    practice = add_practice(db_session)
+    call = start_call(db_session, practice.id, "+18135550142")
+    state = DialogState(turn_count=1)
+
+    with pytest.raises(ToolError, match="isn't an appointment time"):
+        gated_book_appointment(
+            db_session, _payload(practice.id, slot="2030-10-06T19:00:00+00:00"),  # a Sunday
+            call_id=call.id, state=state,
+        )
+
+    assert state.pending_confirmation is False
+    assert state.slots == BookingSlots()
+
+
+def test_gate_returns_an_existing_booking_instead_of_proposing_again(db_session):
+    # The barge-in case: the confirming call committed, but the model never
+    # saw the result and calls again. It gets the booking, not a new read-back.
+    practice = add_practice(db_session)
+    call = start_call(db_session, practice.id, "+18135550142")
+    state = DialogState(turn_count=1)
+    gated_book_appointment(db_session, _payload(practice.id), call_id=call.id, state=state)
+    state.turn_count = 2
+    booked = gated_book_appointment(db_session, _payload(practice.id), call_id=call.id, state=state)
+
+    # Even with state lost (e.g. the Redis save after the commit failed).
+    again = gated_book_appointment(db_session, _payload(practice.id), call_id=call.id, state=DialogState(turn_count=2))
+
+    assert again.appointment_id == booked.appointment_id
+    assert db_session.query(Appointment).count() == 1

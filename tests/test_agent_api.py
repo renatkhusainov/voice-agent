@@ -154,7 +154,7 @@ def test_confirmation_gate_over_two_http_turns(client, db_session):
     practice = add_practice(db_session)
     booking_args = {
         "practice_id": practice.id, "caller_name": "Dana Lee", "service": "cleaning",
-        "callback_number": "+18135550142", "requested_slot": "2026-10-01T13:00:00Z",
+        "callback_number": "+18135550142", "requested_slot": "2030-10-01T13:00:00Z",
     }
     use_fake_client(
         tool_use_response("book_appointment", booking_args),
@@ -226,7 +226,7 @@ def test_session_state_endpoint_reflects_pending_confirmation(client, db_session
     practice = add_practice(db_session)
     booking_args = {
         "practice_id": practice.id, "caller_name": "Dana Lee", "service": "cleaning",
-        "callback_number": "+18135550142", "requested_slot": "2026-10-01T13:00:00Z",
+        "callback_number": "+18135550142", "requested_slot": "2030-10-01T13:00:00Z",
     }
     use_fake_client(
         tool_use_response("book_appointment", booking_args),
@@ -264,7 +264,7 @@ def test_booking_cannot_execute_without_a_confirmed_state(client, db_session, _d
     practice = add_practice(db_session)
     use_fake_client(tool_use_response("book_appointment", {
         "practice_id": practice.id, "caller_name": "Dana Lee", "service": "cleaning",
-        "callback_number": "+18135550142", "requested_slot": "2026-10-01T13:00:00Z",
+        "callback_number": "+18135550142", "requested_slot": "2030-10-01T13:00:00Z",
     }), text_response("Let me just confirm those details with you first."))
 
     client.post("/agent/turn", json={

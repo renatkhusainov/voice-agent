@@ -23,7 +23,7 @@ from datetime import datetime
 from enum import Enum
 from functools import partial
 from typing import Literal
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -32,9 +32,8 @@ from app.agent.prompts import PROMPT_VERSION
 from app.agent.spoken import spoken_digits, spoken_time
 from app.agent.tools import (
     BookAppointmentInput, EscalateToHumanInput, ToolHandler, book_appointment, build_dispatch,
-    check_availability, escalate_to_human, localize_slot,
+    check_availability, check_booking, escalate_to_human,
 )
-from app.models.models import Call
 
 __all__ = [
     "DialogIntent",
@@ -175,21 +174,6 @@ class BookingProposalResult(BaseModel):
     )
 
 
-def _call_tz(db: Session, call_id: int) -> ZoneInfo | None:
-    """The timezone of the practice this call belongs to — taken from the
-    Call row, not from the model's practice_id. None if either is missing or
-    the zone is unknown: the read-back then falls back to ISO rather than
-    failing a proposal over formatting. (book_appointment itself still
-    rejects a bad call or practice when the booking actually runs.)"""
-    call = db.get(Call, call_id)
-    if call is None or call.practice is None:
-        return None
-    try:
-        return ZoneInfo(call.practice.timezone)
-    except ZoneInfoNotFoundError:
-        return None
-
-
 def _slots_from_payload(payload: BookAppointmentInput) -> BookingSlots:
     return BookingSlots(
         practice_id=payload.practice_id, caller_name=payload.caller_name,
@@ -211,14 +195,31 @@ def gated_book_appointment(
     same turn — no intervening caller message — still can't confirm anything,
     because turn_count only advances in app/agent/session.py's take_turn,
     once per real inbound message.
+
+    Two things happen before any of that:
+      * tools.check_booking runs first, so a slot that would fail anyway
+        (closed, off the grid, in the past, taken, wrong practice) is refused
+        now, with a ToolError, instead of being read back to the caller and
+        failing after they say yes. State is not touched on that path.
+      * If this call already holds this exact slot, the booking is already
+        done: return it. That happens when the caller barges in while the
+        confirming call is running. The booking commits, the model never sees
+        the result and tries again. A second read-back would be wrong, and
+        it would end in "already booked" against the caller's own appointment.
     """
-    # Resolve the slot to UTC first (no offset = practice-local, see
-    # tools.localize_slot), so the same time compares equal however the
-    # model wrote it, and the read-back says it in local time.
-    tz = _call_tz(db, call_id)
-    if tz is not None:
-        payload = payload.model_copy(update={"requested_slot": localize_slot(payload.requested_slot, tz)})
+    # check_booking also resolves the slot to UTC (no offset =
+    # practice-local), so the same time compares equal however the model
+    # wrote it, and the read-back says it in local time.
+    check = check_booking(db, payload, call_id=call_id)
+    payload = payload.model_copy(update={"requested_slot": check.slot})
     proposed = _slots_from_payload(payload)
+
+    if check.existing is not None:
+        state.intent = DialogIntent.book_appointment
+        state.slots = proposed
+        state.confirmed = True
+        state.pending_confirmation = False
+        return book_appointment(db, payload, call_id=call_id)  # idempotent: the existing booking
 
     # Exact match on purpose: this is the "decides," not the "proposes." The
     # trade-off is real, not hidden — if the model restates a field even
@@ -242,7 +243,7 @@ def gated_book_appointment(
         state.pending_confirmation = True
         state.confirmed = False
         state.proposed_at_turn = state.turn_count
-        return BookingProposalResult(read_back=state.read_back_text(tz))
+        return BookingProposalResult(read_back=state.read_back_text(check.tz))
 
     result = book_appointment(db, payload, call_id=call_id)
     state.confirmed = True

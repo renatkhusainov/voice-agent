@@ -140,7 +140,7 @@ def test_take_turn_blocks_booking_on_the_first_proposal(db_session, redis):
     client = FakeClient([
         tool_use_response("book_appointment", {
             "practice_id": practice.id, "caller_name": "Dana Lee", "service": "cleaning",
-            "callback_number": "+18135550142", "requested_slot": "2026-10-01T13:00:00Z",
+            "callback_number": "+18135550142", "requested_slot": "2030-10-01T13:00:00Z",
         }),
         text_response("Let me confirm those details with you."),
     ])
@@ -165,7 +165,7 @@ def test_take_turn_books_on_a_later_confirming_turn(db_session, redis):
     session = get_or_create_session("sess-1", create_call_id=lambda: call.id)
     booking_args = {
         "practice_id": practice.id, "caller_name": "Dana Lee", "service": "cleaning",
-        "callback_number": "+18135550142", "requested_slot": "2026-10-01T13:00:00Z",
+        "callback_number": "+18135550142", "requested_slot": "2030-10-01T13:00:00Z",
     }
     client = FakeClient([
         tool_use_response("book_appointment", booking_args),
@@ -181,7 +181,7 @@ def test_take_turn_books_on_a_later_confirming_turn(db_session, redis):
     from app.models.models import Appointment
     assert db_session.query(Appointment).count() == 1
     appt = db_session.query(Appointment).first()
-    assert appt.status.value == "pending"
+    assert appt.status.value == "confirmed"  # FHIR status=booked
 
     state = store.get_state("sess-1", client=redis)
     assert state.confirmed is True
