@@ -15,7 +15,7 @@ START_EVENT = {
     "event": "start",
     "sequenceNumber": "1",
     "start": {
-        "accountSid": "ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "accountSid": "AC_FAKE_ACCOUNT_SID_FOR_TESTS",
         "streamSid": "MZbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "callSid": "CAcccccccccccccccccccccccccccccccc",
         "tracks": ["inbound"],

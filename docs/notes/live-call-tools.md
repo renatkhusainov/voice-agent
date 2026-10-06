@@ -118,6 +118,23 @@ its own value for the container. On top of that, without Redis the agent
 keeps talking, and availability, FAQ and escalation still work. Only
 `book_appointment` is refused, and the model is told to offer a callback.
 
+**Only slots the practice offers can be proposed or booked.**
+`tools.check_booking` refuses a time in the past, outside business hours or
+off the 30-minute grid, and a slot already held by another call. The gate
+runs it *before* proposing, so a caller is never read back a time that would
+fail after they say yes. `reschedule_appointment` applies the same hours
+check. Before this, nothing forced the model to call `check_availability`
+first, and "Sunday at 3 AM" would have booked.
+
+**Barge-in during the confirming call can't double-book or strand the
+caller.** Pipecat cancels a running tool call when the caller starts talking,
+but it can't stop the worker thread, so the booking still commits.
+`LiveCallAgent._run_to_completion` waits for that thread (shielded) before it
+lets the cancellation through and releases the lock. Booking is also
+idempotent per call and slot. The model's retry gets the existing appointment
+back, instead of a second read-back ending in "already booked" against the
+caller's own booking.
+
 ## Known gaps
 
 - `reschedule_appointment` is still not gated (unchanged; see

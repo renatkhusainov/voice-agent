@@ -33,8 +33,8 @@ from app.models.models import Appointment, Intent, Lead, Practice, TranscriptRol
 from app.services.calls import start_call
 from tests.conftest import TestingSessionLocal
 
-# A Thursday, 9 AM in New York — see the read-back assertion below.
-SLOT = "2026-10-01T13:00:00Z"
+# A Tuesday, 9 AM in New York (far enough ahead to stay in the future) — see the read-back assertion below.
+SLOT = "2030-10-01T13:00:00Z"
 
 
 class FakeLLM:
@@ -147,7 +147,7 @@ def test_booking_on_a_live_call_needs_a_new_caller_turn(db_session):
 
     assert result["status"] == "pending_confirmation"
     # Written to be said out loud: local time, digits one by one.
-    assert result["read_back"] == "Dana Lee, phone number ending in 0 1 4 2, for a cleaning at 9 AM Thursday the 1st"
+    assert result["read_back"] == "Dana Lee, phone number ending in 0 1 4 2, for a cleaning at 9 AM Tuesday the 1st"
     assert db_session.query(Appointment).count() == 0
 
     # Same turn, second call (e.g. the model retries after the tool result):
@@ -164,7 +164,7 @@ def test_booking_on_a_live_call_needs_a_new_caller_turn(db_session):
     result, _ = run(h.tool_call("book_appointment", args, context))
 
     assert "appointment_id" in result
-    assert result["spoken_time"] == "9 AM Thursday the 1st"
+    assert result["spoken_time"] == "9 AM Tuesday the 1st"
     assert db_session.query(Appointment).count() == 1
     assert h.state().confirmed is True
 
@@ -222,7 +222,7 @@ def test_a_local_time_without_offset_books_the_practice_local_hour(db_session):
     # From a live run: the model sent "2026-12-15T09:30:00" for "9:30 in the
     # morning". No offset means the practice's local time (New York, EST).
     h = Harness(db_session)
-    args = {**booking_args(h.practice.id), "requested_slot": "2026-12-15T09:30:00"}
+    args = {**booking_args(h.practice.id), "requested_slot": "2030-01-15T09:30:00"}
 
     context = h.caller_says("Cleaning Tuesday the 15th at 9:30am please, Dana Lee, 813 555 0142")
     run(h.agent.system_prompt_for(context))
@@ -230,12 +230,12 @@ def test_a_local_time_without_offset_books_the_practice_local_hour(db_session):
     context = h.caller_says("Yes")
     run(h.agent.system_prompt_for(context))
     # The model may now write the same time the other way, as the UTC `start`.
-    booked, _ = run(h.tool_call("book_appointment", {**args, "requested_slot": "2026-12-15T14:30:00Z"}, context))
+    booked, _ = run(h.tool_call("book_appointment", {**args, "requested_slot": "2030-01-15T14:30:00Z"}, context))
 
     assert proposal["read_back"].endswith("at 9:30 AM Tuesday the 15th")
     assert booked["spoken_time"] == "9:30 AM Tuesday the 15th"
     appointment = db_session.query(Appointment).one()
-    assert appointment.requested_slot.replace(tzinfo=timezone.utc) == datetime(2026, 12, 15, 14, 30, tzinfo=timezone.utc)
+    assert appointment.requested_slot.replace(tzinfo=timezone.utc) == datetime(2030, 1, 15, 14, 30, tzinfo=timezone.utc)
 
 
 # ── Escalation ─────────────────────────────────────────────────────────────
@@ -406,3 +406,37 @@ def test_booking_is_refused_not_attempted_when_redis_is_down(db_session):
         assert result["error"].startswith("Booking is unavailable right now.")
 
     assert db_session.query(Appointment).count() == 0
+
+
+# ── Barge-in during the confirming call ─────────────────────────────────────
+def test_barge_in_during_booking_commits_once_and_the_retry_gets_the_booking(db_session, monkeypatch):
+    h = Harness(db_session)
+    args = booking_args(h.practice.id)
+    context = h.caller_says("Book me a cleaning")
+    run(h.agent.system_prompt_for(context))
+    run(h.tool_call("book_appointment", args, context))  # proposal
+    context = h.caller_says("Yes")
+    run(h.agent.system_prompt_for(context))
+
+    _slow_tools(monkeypatch, 0.2)
+
+    async def interrupted_then_retried():
+        # Pipecat cancels the running handler when the caller starts talking.
+        confirming = asyncio.create_task(h.tool_call("book_appointment", args, context))
+        await asyncio.sleep(0.05)
+        confirming.cancel()
+        try:
+            await confirming
+        except asyncio.CancelledError:
+            pass
+        # The handler only lets the cancellation through once its thread is
+        # done: the booking is already committed and state saved here.
+        assert db_session.query(Appointment).count() == 1
+        assert h.state().confirmed is True
+        # The model tries again after the interruption.
+        return await h.tool_call("book_appointment", args, context)
+
+    retry, _ = run(interrupted_then_retried())
+
+    assert "appointment_id" in retry  # the booking itself, not a second read-back
+    assert db_session.query(Appointment).count() == 1

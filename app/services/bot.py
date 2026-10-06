@@ -33,6 +33,7 @@ from pipecat.services.deepgram.tts import DeepgramTTSService
 from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.llm_service import LLMService
 from pipecat.services.stt_service import STTService
+from pipecat.services.tts_service import TextAggregationMode
 from pipecat.transports.base_transport import BaseTransport
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 from pipecat.workers.runner import WorkerRunner
@@ -44,6 +45,8 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models.models import CallStatus, TranscriptRole
 from app.services.calls import add_transcript_turn, end_call, start_call
+from app.services.latency import LatencyObserver
+from app.services.tts import FlushingDeepgramTTSService
 
 # Pipecat's Twilio serializer reads TWILIO_* straight from os.environ, so .env must
 # be exported. No override: variables already set (Docker, tests) take precedence.
@@ -214,6 +217,8 @@ async def run_bot(
     # half of the filler A/B (docs/notes/filler-ab.md).
     latency = UserBotLatencyObserver()
     response_latencies_ms: list[int] = []
+    # Per-stage timestamps for every caller turn -> call_metrics.
+    stages = LatencyObserver(call.call_id, settings.latency_label)
 
     try:
         # No system_instruction here: DialogStateLLMService builds it from
@@ -221,17 +226,25 @@ async def run_bot(
         llm = DialogStateLLMService(
             agent=agent,
             api_key=os.getenv("ANTHROPIC_API_KEY"),
-            settings=AnthropicLLMService.Settings(model=DEFAULT_MODEL),
+            settings=AnthropicLLMService.Settings(
+                model=DEFAULT_MODEL, enable_prompt_caching=settings.llm_prompt_caching,
+            ),
         )
         agent.register(llm)
 
+        stt_kwargs = {}
+        if settings.stt_ttfs_p99_secs is not None:
+            stt_kwargs["ttfs_p99_latency"] = settings.stt_ttfs_p99_secs
         stt = DeepgramSTTService(
             api_key=os.getenv("DEEPGRAM_API_KEY"),
             settings=DeepgramSTTService.Settings(redact=STT_REDACT),
+            **stt_kwargs,
         )
 
-        tts = DeepgramTTSService(
+        tts_class = FlushingDeepgramTTSService if settings.tts_flush_each_sentence else DeepgramTTSService
+        tts = tts_class(
             api_key=os.getenv("DEEPGRAM_API_KEY"),
+            text_aggregation_mode=TextAggregationMode(settings.tts_text_aggregation),
             settings=DeepgramTTSService.Settings(
                 voice="aura-asteria-en",
                 model="aura-2.0",
@@ -274,7 +287,7 @@ async def run_bot(
             idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
             # Transcript persistence hangs off the pipeline as an observer — see
             # TranscriptObserver — rather than a processor or aggregator hook.
-            observers=[transcript, latency],
+            observers=[transcript, latency, stages],
         )
 
         @latency.event_handler("on_latency_measured")
@@ -327,6 +340,7 @@ async def run_bot(
         logger.exception(f"Call {call.call_id} pipeline crashed")
         raise
     finally:
+        await stages.flush()
         status = CallStatus.failed if call_failed else CallStatus.completed
         await asyncio.to_thread(_end_call, call.call_id, status)
         logger.info(

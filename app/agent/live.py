@@ -191,7 +191,7 @@ class LiveCallAgent:
         )
         try:
             async with self._lock:
-                outcome = await asyncio.to_thread(self._run_tool_blocking, name, dict(params.arguments))
+                outcome = await self._run_to_completion(name, dict(params.arguments))
         finally:
             if filler:
                 await filler.stop()
@@ -214,6 +214,37 @@ class LiveCallAgent:
             return
 
         await params.result_callback(result)
+
+    async def _run_to_completion(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
+        """Run the tool in a thread and never leave while that thread is
+        still running, even when this handler is cancelled.
+
+        Pipecat cancels a running tool call when the caller barges in
+        (cancel_on_interruption defaults to True). Cancelling the await
+        doesn't stop the thread: a confirmed booking still commits. Returning
+        right away would release the lock while the thread is still writing
+        DialogState, and the model's retry could race it. So on cancel, wait
+        for the thread (shielded), then let the cancellation through. The
+        model's retry is then safe: booking is idempotent per call and slot
+        (tools.check_booking), so it gets the existing appointment back
+        instead of a second read-back.
+        """
+        work = asyncio.ensure_future(asyncio.to_thread(self._run_tool_blocking, name, arguments))
+        try:
+            return await asyncio.shield(work)
+        except asyncio.CancelledError:
+            # A second cancel while waiting must not end the wait either.
+            while not work.done():
+                try:
+                    await asyncio.shield(work)
+                except asyncio.CancelledError:
+                    continue
+            outcome = work.result()
+            logger.info(
+                "call={} tool={} interrupted by the caller; finished anyway: error={}",
+                self.call_id, name, outcome.is_error,
+            )
+            raise
 
     def _run_tool_blocking(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
         """Runs in a worker thread: load state, run the tool through the gate,
@@ -313,8 +344,15 @@ class DialogStateLLMService(AnthropicLLMService):
     def __init__(self, *, agent: LiveCallAgent, **kwargs):
         super().__init__(**kwargs)
         self._agent = agent
+        self._logged_settings = False
 
     async def _process_context(self, context: LLMContext):
+        if not self._logged_settings:
+            self._logged_settings = True
+            logger.info(
+                "call={} llm model={} prompt_caching={}",
+                self._agent.call_id, self._settings.model, self._settings.enable_prompt_caching,
+            )
         prompt = await self._agent.system_prompt_for(context)
         # Only logs (and recomposes) when the prompt actually changed.
         await self._update_settings(LLMSettings(system_instruction=prompt))
